@@ -1,219 +1,380 @@
-// src/app/dashboard/page.tsx
-'use client';
+// src/app/page.tsx
+"use client";
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect } from "react";
+import PowerMetricsPanel from "./dashboard/PowerMetricsPanel";
 
-interface TriggerLog {
+interface LogEntry {
   id: string;
-  timestamp: string;
   sensor: string;
-  zone: string;
   status: string;
+  timestamp: number;
+  zone: string;
 }
 
 export default function LannessDashboard() {
-  const [activeTab, setActiveTab] = useState<'current' | 'history'>('current');
-  const [cameraDirection, setCameraDirection] = useState<'N' | 'S' | 'E' | 'W'>('N');
-  
-  // App state for visibility toggles
+  const [globalSystemStatus, setGlobalSystemStatus] = useState<string>("standby");
+  const [liveTelemetry, setLiveTelemetry] = useState<any>(null);
+  const [historyLogs, setHistoryLogs] = useState<LogEntry[]>([]);
+  const [cameraDirection, setCameraDirection] = useState<"N" | "S" | "E" | "W">("N");
+  const [activeTab, setActiveTab] = useState<"current" | "history">("current");
   const [showCurrentThreat, setShowCurrentThreat] = useState(true);
-  const [systemLogs, setSystemLogs] = useState<TriggerLog[]>([]);
-
-  // Double approval modal tracking states
   const [isModalOpen, setIsModalOpen] = useState(false);
-  const [targetToDismiss, setTargetToDismiss] = useState<'current' | string | null>(null);
+  const [expandedImage, setExpandedImage] = useState<string | null>(null);
 
-  // Initialize mock Firestore streams
+  // New States: Tracking itemized deletion target and live tactical field notes
+  const [logToDelete, setLogToDelete] = useState<string | null>(null);
+  const [threatNote, setThreatNote] = useState<string>("");
+
+  // Unsplash tactical mock imagery streams
+  const threatSnapshots = [
+    "https://images.unsplash.com/photo-1527977966376-1c8408f9f108?auto=format&fit=crop&w=600&q=80",
+    "https://images.unsplash.com/photo-1508614589041-895b88991e3e?auto=format&fit=crop&w=600&q=80",
+  ];
+
+  // STREAM A: Real-Time Telemetry Listener
   useEffect(() => {
-    const mockData: TriggerLog[] = [
-      { id: '1', timestamp: '2026-05-29 10:31:02', sensor: 'LiDAR TF03-100', zone: 'North Vector', status: 'Beam Cleared' },
-      { id: '2', timestamp: '2026-05-29 10:32:15', sensor: 'MEMS Mic Cluster (x8)', zone: 'East Vector', status: 'Acoustic Match: Drone' },
-      { id: '3', timestamp: '2026-05-29 10:34:40', sensor: 'HC-SR501 PIR', zone: 'South Vector', status: 'Active Warning Dispatched' },
-    ];
-    setSystemLogs(mockData);
+    const telemetryUrl = "https://lanness-sytem-default-rtdb.firebaseio.com/lanness-tower-01/telemetry.json";
+    const eventSource = new EventSource(telemetryUrl);
+
+    eventSource.addEventListener("put", (event: MessageEvent) => {
+      try {
+        const streamData = JSON.parse(event.data);
+        if (!streamData) return;
+
+        if (streamData.path === "/" && streamData.data) {
+          setGlobalSystemStatus(streamData.data.status || "standby");
+          setLiveTelemetry(streamData.data.metrics || null);
+        } else if (streamData.path === "/metrics") {
+          setLiveTelemetry(streamData.data);
+        } else if (streamData.path === "/status") {
+          setGlobalSystemStatus(streamData.data);
+        }
+      } catch (error) {
+        console.error("Telemetry streaming error:", error);
+      }
+    });
+
+    return () => eventSource.close();
   }, []);
 
-  // Phase 1: Trigger the Approval Process
-  const initiateDismissal = (target: 'current' | string) => {
-    setTargetToDismiss(target);
-    setIsModalOpen(true);
+  // STREAM B: Trigger History Logs Listener
+  useEffect(() => {
+    const historyUrl = "https://lanness-sytem-default-rtdb.firebaseio.com/lanness-tower-01/history.json";
+    const eventSource = new EventSource(historyUrl);
+
+    eventSource.addEventListener("put", (event: MessageEvent) => {
+      try {
+        const streamData = JSON.parse(event.data);
+        if (!streamData) return;
+
+        const rawData = streamData.data;
+
+        if (streamData.path === "/") {
+          if (rawData) {
+            const parsedLogs = Object.keys(rawData).map((key) => ({
+              id: key,
+              ...rawData[key],
+            }));
+            setHistoryLogs(parsedLogs.sort((a, b) => b.timestamp - a.timestamp));
+          } else {
+            setHistoryLogs([]);
+          }
+        }
+      } catch (error) {
+        console.error("History logging stream error:", error);
+      }
+    });
+
+    return () => eventSource.close();
+  }, []);
+
+  // Set targeted item for custom Level-2 validation check
+  const initiateDeleteLog = (id: string) => {
+    setLogToDelete(id);
   };
 
-  // Phase 2: Finalized Second Approval Execution
-  const confirmDismissal = () => {
-    if (targetToDismiss === 'current') {
-      setShowCurrentThreat(false);
-    } else if (typeof targetToDismiss === 'string') {
-      setSystemLogs(prev => prev.filter(log => log.id !== targetToDismiss));
+  // Confirmed execution pipeline for index log erasure
+  const confirmDeleteLog = async () => {
+    if (!logToDelete) return;
+    try {
+      const itemUrl = `https://lanness-sytem-default-rtdb.firebaseio.com/lanness-tower-01/history/${logToDelete}.json`;
+      const response = await fetch(itemUrl, { method: "DELETE" });
+
+      if (!response.ok) {
+        console.error("Failed to delete specific item node from backend database.");
+      }
+    } catch (error) {
+      console.error("Network fault processing item node elimination:", error);
+    } finally {
+      setLogToDelete(null);
     }
-    // Clean up modal state
+  };
+
+  const handleDismissClick = () => setIsModalOpen(true);
+  const confirmDismissal = () => {
+    setShowCurrentThreat(false);
     setIsModalOpen(false);
-    setTargetToDismiss(null);
   };
 
   return (
-    <main className="min-h-screen bg-slate-950 text-slate-100 p-6 font-sans relative">
-      
-      {/* Top Banner Navigation */}
+    <main className="min-h-screen bg-slate-950 text-slate-100 p-6 font-mono selection:bg-emerald-500/20">
+      {/* Header Panel */}
       <header className="flex justify-between items-center border-b border-slate-800 pb-4 mb-6">
         <div>
-          <h1 className="text-2xl font-bold tracking-wider text-emerald-500">LANNESS</h1>
-          <p className="text-xs text-slate-400">Tactical Perimeter Security Hub</p>
+          <h1 className="text-xl font-bold tracking-wider text-emerald-500">Lannes System Dashboard</h1>
+          <p className="text-[11px] text-slate-400">Tactical Perimeter Security Hub</p>
         </div>
-        <div className="flex items-center gap-4 text-sm bg-slate-900 px-4 py-2 rounded border border-slate-800">
-          <div className="flex items-center gap-2">
-            <span className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse"></span>
-            <span className="text-slate-300 font-mono">T-SIM7080G Link: Connected</span>
-          </div>
+        <div className="bg-slate-900 px-4 py-1.5 rounded border border-slate-800 flex items-center gap-3 text-xs">
+          <span
+            className={`w-2 h-2 rounded-full ${globalSystemStatus !== "Idle" ? "bg-red-500 animate-pulse" : "bg-emerald-500 animate-ping"}`}
+          ></span>
+          <span className="text-slate-300 uppercase tracking-wide">Tower Status: {globalSystemStatus}</span>
         </div>
       </header>
 
-      {/* Grid Canvas */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        
-        {/* Left Side: Video Array */}
-        <div className="lg:col-span-2 space-y-6">
-          <section className="bg-slate-900 border border-slate-800 rounded-lg p-4">
-            <div className="flex justify-between items-center mb-3">
-              <h2 className="text-sm font-semibold tracking-wide text-slate-400 uppercase">Live Tower Camera Array</h2>
-              <span className="text-xs font-mono bg-slate-800 px-2 py-0.5 rounded text-emerald-400">Arducam IMX477 Array</span>
+      <div className="max-w-[1600px] mx-auto flex flex-col">
+        <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
+          {/* Column A: Camera Matrix Frame */}
+          <div className="xl:col-span-2 bg-slate-900 border border-slate-800 rounded-lg p-4 space-y-4">
+            <div className="flex justify-between items-center">
+              <h2 className="text-xs font-bold uppercase tracking-wider text-slate-400">Live Tower Camera Array</h2>
+              <span className="text-[10px] bg-slate-950 px-2 py-0.5 rounded text-emerald-400">Arducam IMX477</span>
             </div>
-            
-            <div className="relative aspect-video bg-slate-950 rounded border border-slate-800 flex items-center justify-center overflow-hidden">
-              <div className="absolute top-3 left-3 bg-black/60 px-2 py-1 rounded text-xs font-mono tracking-widest text-white">
+            <div className="relative aspect-video bg-slate-950 rounded border border-slate-850 flex items-center justify-center overflow-hidden">
+              <div className="absolute top-3 left-3 bg-black/75 px-2 py-1 rounded text-[10px] tracking-widest text-white">
                 CAM_FEED_{cameraDirection} // STREAM_LIVE
               </div>
-              <div className="text-center p-4">
-                <p className="text-sm text-slate-500 uppercase tracking-widest font-mono">[ Simulating Video Channel {cameraDirection} ]</p>
-              </div>
+              <p className="text-xs text-slate-600 uppercase tracking-widest">
+                [ Simulating Video Channel {cameraDirection} ]
+              </p>
             </div>
-
-            <div className="grid grid-cols-4 gap-2 mt-3">
-              {(['N', 'S', 'E', 'W'] as const).map((dir) => (
+            <div className="grid grid-cols-4 gap-2">
+              {(["N", "S", "E", "W"] as const).map((dir) => (
                 <button
                   key={dir}
                   onClick={() => setCameraDirection(dir)}
-                  className={`py-2 text-xs font-mono font-bold rounded border transition-colors ${
+                  className={`py-2 text-xs font-bold rounded border transition-colors ${
                     cameraDirection === dir
-                      ? 'bg-emerald-600 border-emerald-500 text-white'
-                      : 'bg-slate-950 border-slate-800 text-slate-400 hover:bg-slate-800'
+                      ? "bg-emerald-600 border-emerald-500 text-white"
+                      : "bg-slate-950 border-slate-800 text-slate-400 hover:bg-slate-800"
                   }`}
                 >
                   Direction {dir}
                 </button>
               ))}
             </div>
-          </section>
-        </div>
+          </div>
 
-        {/* Right Side: Security Intelligence Center */}
-        <div className="space-y-6">
-          <section className="bg-slate-900 border border-slate-800 rounded-lg p-4 flex flex-col h-[420px]">
-            {/* Tab Header Controls */}
-            <div className="flex border-b border-slate-800 mb-4">
-              <button
-                onClick={() => setActiveTab('current')}
-                className={`flex-1 pb-2 text-xs font-bold uppercase tracking-wider transition-colors ${
-                  activeTab === 'current' ? 'border-b-2 border-emerald-500 text-emerald-400' : 'text-slate-500 hover:text-slate-300'
-                }`}
-              >
-                Current Threat
-              </button>
-              <button
-                onClick={() => setActiveTab('history')}
-                className={`flex-1 pb-2 text-xs font-bold uppercase tracking-wider transition-colors ${
-                  activeTab === 'history' ? 'border-b-2 border-emerald-500 text-emerald-400' : 'text-slate-500 hover:text-slate-300'
-                }`}
-              >
-                Trigger History
-              </button>
-            </div>
+          {/* Column B: Telemetry Threats and Real-time Trigger History */}
+          <div className="bg-slate-900 border border-slate-800 rounded-lg p-4 flex flex-col justify-between h-full w-full">
+            <div>
+              <div className="flex border-b border-slate-800 mb-4 text-xs font-bold">
+                <button
+                  onClick={() => setActiveTab("current")}
+                  className={`flex-1 pb-2 uppercase tracking-wider transition-colors ${activeTab === "current" ? "border-b-2 border-emerald-500 text-emerald-400" : "text-slate-500"}`}
+                >
+                  Current Threat
+                </button>
+                <button
+                  onClick={() => setActiveTab("history")}
+                  className={`flex-1 pb-2 uppercase tracking-wider transition-colors ${activeTab === "history" ? "border-b-2 border-emerald-500 text-emerald-400" : "text-slate-500"}`}
+                >
+                  Trigger History
+                </button>
+              </div>
 
-            {/* Tab Container Display Panels */}
-            <div className="flex-1 overflow-y-auto space-y-3 font-mono">
-              {activeTab === 'current' ? (
-                showCurrentThreat ? (
-                  <div className="bg-red-950/20 border border-red-900/40 p-4 rounded text-sm space-y-5 flex flex-col justify-between max-h-[320px]">
-                    <div className="space-y-3">
-                      <div className="flex justify-between items-center">
-                        <span className="text-red-400 font-bold tracking-wide">⚠️ ACTIVE INCIDENT</span>
-                        <span className="text-xs text-red-500 animate-pulse">Live</span>
+              {/* Display Area */}
+              <div className="space-y-3 w-full">
+                {activeTab === "current" ? (
+                  showCurrentThreat && liveTelemetry ? (
+                    <div className="bg-red-950/10 border border-red-900/40 p-4 rounded text-xs space-y-3">
+                      <div className="flex justify-between items-center text-red-400 font-bold">
+                        <span>⚠️ ACTIVE INCIDENT</span>
+                        <span className="text-[10px] bg-red-950 border border-red-800 px-1.5 py-0.5 rounded animate-pulse">
+                          LIVE
+                        </span>
                       </div>
-                      <div className="text-xs space-y-1.5 text-slate-300">
-                        <p><span className="text-slate-500">Sector:</span> East Cardinal Approach</p>
-                        {/* Note: Trigger field deleted per requirements profile specifications */}
-                        <p><span className="text-slate-500">Metrics:</span> High-frequency acoustic RPM signature (Drone profile matching)</p>
+
+                      <div className="space-y-1 text-slate-300 pt-1">
+                        <p>
+                          <span className="text-slate-500">Acoustic Profile:</span>{" "}
+                          <span className="text-amber-400 font-bold">{liveTelemetry.acoustic_target || "None"}</span> (
+                          {liveTelemetry.acoustic_frequency_hz || 0} Hz)
+                        </p>
+                        <p>
+                          <span className="text-slate-500">LiDAR Range Boundary:</span>{" "}
+                          {liveTelemetry.lidar_distance_m || 0} meters
+                        </p>
+                        <p>
+                          <span className="text-slate-500">PIR Sensor Breach:</span>{" "}
+                          {liveTelemetry.pir_trigger === 1 ? "CORRIDOR VIOLATION" : "SECURE"}
+                        </p>
                       </div>
-                    </div>
-                    
-                    <button
-                      onClick={() => initiateDismissal('current')}
-                      className="w-full mt-2 bg-red-900/30 hover:bg-red-900/50 border border-red-700/40 text-red-200 text-xs py-2 rounded transition-colors uppercase font-bold tracking-wide"
-                    >
-                      Dismiss Threat Report
-                    </button>
-                  </div>
-                ) : (
-                  <div className="text-center py-12 text-xs text-slate-500 italic">
-                    No active threats reporting. Perimeter secure.
-                  </div>
-                )
-              ) : (
-                <div className="space-y-2 max-h-[325px] overflow-y-auto pr-1">
-                  {systemLogs.length > 0 ? (
-                    systemLogs.map((log) => (
-                      <div key={log.id} className="bg-slate-950 p-3 rounded border border-slate-800 text-xs relative group">
-                        <button 
-                          onClick={() => initiateDismissal(log.id)}
-                          className="absolute top-2 right-2 text-slate-600 hover:text-red-400 text-sm font-sans px-1 transition-colors"
-                          title="Clear from log history"
-                        >
-                          ✕
-                        </button>
-                        <div className="flex justify-between text-slate-500 mb-1 pr-4">
-                          <span>{log.timestamp}</span>
-                          <span className="text-emerald-500">{log.zone}</span>
+
+                      {/* Incident Snapshot Thumbnail Panel */}
+                      <div className="space-y-2 pt-1 border-t border-red-900/30">
+                        <span className="text-[10px] text-slate-500 uppercase block tracking-wider font-bold">
+                          Arducam Threat Capture Event
+                        </span>
+                        <div className="flex gap-2">
+                          {threatSnapshots.map((src, idx) => (
+                            <div
+                              key={idx}
+                              onClick={() => setExpandedImage(src)}
+                              className="relative w-24 aspect-video bg-slate-950 rounded border border-slate-800 overflow-hidden cursor-zoom-in hover:border-red-500 transition-colors group flex-shrink-0"
+                            >
+                              <img
+                                src={src}
+                                alt={`Threat Capture Frame ${idx + 1}`}
+                                className="w-full h-full object-cover opacity-60 group-hover:opacity-80 transition-opacity"
+                              />
+                              <div className="absolute bottom-0.5 right-1 bg-slate-950/80 px-1 rounded text-[7px] text-slate-400 font-mono">
+                                F_0{idx + 1}
+                              </div>
+                            </div>
+                          ))}
                         </div>
-                        <p className="text-slate-200 font-semibold">{log.sensor}</p>
-                        <p className="text-slate-400 text-[11px] mt-0.5">↳ Status: {log.status}</p>
+
+                        {/* NEW FEATURE: Operational Notes Input Field Container */}
+                        <div className="pt-1">
+                          <label className="text-[10px] text-slate-500 uppercase block tracking-wider font-bold mb-1">
+                            Incident Tactical Notes
+                          </label>
+                          <textarea
+                            value={threatNote}
+                            onChange={(e) => setThreatNote(e.target.value)}
+                            placeholder="Type tactical assessment log details here..."
+                            className="w-full bg-slate-950/60 border border-slate-800 rounded p-2 text-[11px] text-slate-300 placeholder-slate-600 focus:outline-none focus:border-red-900/60 resize-none h-14 font-mono"
+                          />
+                        </div>
                       </div>
-                    ))
-                  ) : (
-                    <div className="text-center py-12 text-xs text-slate-500 italic">
-                      Trigger history fully cleared.
                     </div>
-                  )}
-                </div>
-              )}
+                  ) : (
+                    <div className="text-center py-16 text-xs text-slate-500 italic">No active vectors reported.</div>
+                  )
+                ) : (
+                  <div className="space-y-2 max-h-[450px] overflow-y-auto pr-1">
+                    {historyLogs.length > 0 ? (
+                      historyLogs.map((log) => (
+                        <div
+                          key={log.id}
+                          className="bg-slate-950 p-2.5 rounded border border-slate-850 text-[11px] space-y-1 relative group/card"
+                        >
+                          <div className="flex justify-between items-center text-slate-500 text-[10px]">
+                            <span>{new Date(log.timestamp * 1000).toLocaleString()}</span>
+                            <div className="flex items-center gap-1.5">
+                              <span className="text-emerald-500 font-bold">{log.zone}</span>
+                              <button
+                                onClick={() => initiateDeleteLog(log.id)}
+                                className="text-red-500 hover:text-red-400 font-bold transition-colors pl-1 text-[10px]"
+                                title="Purge Record"
+                              >
+                                [X]
+                              </button>
+                            </div>
+                          </div>
+                          <p className="text-slate-200 font-semibold">{log.sensor}</p>
+                          <p className="text-slate-400 text-[10px]">↳ Status: {log.status}</p>
+                        </div>
+                      ))
+                    ) : (
+                      <div className="text-center py-16 text-xs text-slate-500 italic">
+                        Trigger history index log empty.
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
             </div>
-          </section>
+
+            {activeTab === "current" && showCurrentThreat && liveTelemetry && (
+              <button
+                onClick={handleDismissClick}
+                className="w-full mt-4 bg-red-900/20 hover:bg-red-900/40 border border-red-800/40 text-red-200 text-xs py-2 rounded transition-colors uppercase font-bold tracking-wide"
+              >
+                Dismiss Threat Report
+              </button>
+            )}
+          </div>
         </div>
+
+        {/* Column C: Power Subsystem Section */}
+        <PowerMetricsPanel liveMetrics={liveTelemetry} />
       </div>
 
-      {/* Double Approval Confirmation Modal Backing */}
+      {/* Dismiss Alert Approval Modal UI */}
       {isModalOpen && (
         <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-          <div className="bg-slate-900 border border-slate-800 rounded-lg p-6 max-w-md w-full shadow-xl font-mono">
-            <h3 className="text-sm font-bold uppercase text-amber-500 tracking-wider mb-2">
-              ⚠️ Priority Level-2 Action Required
+          <div className="bg-slate-900 border border-slate-800 rounded-lg p-6 max-w-sm w-full shadow-2xl">
+            <h3 className="text-xs font-bold uppercase text-amber-500 tracking-wider mb-2">
+              ⚠️ Priority Level-2 Action
             </h3>
-            <p className="text-xs text-slate-300 leading-relaxed mb-6">
-              You are completing an administrative override to clear this telemetry event layer. This action cannot be reverted automatically. Do you confirm this security command?
+            <p className="text-[11px] text-slate-400 leading-relaxed mb-6">
+              Executing administrative override. This will clear the active live alert telemetry layer from the monitor
+              workspace.
             </p>
-            <div className="flex gap-3 justify-end">
+            <div className="flex gap-2 justify-end text-xs">
               <button
-                onClick={() => { setIsModalOpen(false); setTargetToDismiss(null); }}
-                className="bg-slate-950 hover:bg-slate-800 text-slate-400 text-xs px-4 py-2 rounded border border-slate-800 transition-colors"
+                onClick={() => setIsModalOpen(false)}
+                className="bg-slate-950 text-slate-400 px-4 py-2 rounded border border-slate-800"
               >
-                Cancel Override
+                Cancel
               </button>
-              <button
-                onClick={confirmDismissal}
-                className="bg-amber-600 hover:bg-amber-700 text-white text-xs font-bold px-4 py-2 rounded transition-colors"
-              >
-                Confirm System Clear
+              <button onClick={confirmDismissal} className="bg-amber-600 font-bold px-4 py-2 rounded text-white">
+                Confirm Clear
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* NEW FEATURE: Itemized Log History Deletion Level-2 Approval Modal */}
+      {logToDelete && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className="bg-slate-900 border border-slate-800 rounded-lg p-6 max-w-sm w-full shadow-2xl">
+            <h3 className="text-xs font-bold uppercase text-amber-500 tracking-wider mb-2">
+              ⚠️ Priority Level-2 Action
+            </h3>
+            <p className="text-[11px] text-slate-400 leading-relaxed mb-6">
+              Executing administrative override. This will permanently purge this specific event log record from the
+              remote index database cache.
+            </p>
+            <div className="flex gap-2 justify-end text-xs">
+              <button
+                onClick={() => setLogToDelete(null)}
+                className="bg-slate-950 text-slate-400 px-4 py-2 rounded border border-slate-800"
+              >
+                Cancel
+              </button>
+              <button onClick={confirmDeleteLog} className="bg-red-600 font-bold px-4 py-2 rounded text-white">
+                Confirm Delete
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Fullscreen Intercept Lightbox Modal for Threat Snapshots */}
+      {expandedImage && (
+        <div
+          className="fixed inset-0 bg-black/95 backdrop-blur-md flex flex-col items-center justify-center z-50 p-4 cursor-zoom-out"
+          onClick={() => setExpandedImage(null)}
+        >
+          <div className="relative max-w-4xl w-full aspect-video bg-slate-950 border border-slate-800 rounded-lg overflow-hidden shadow-2xl shadow-red-950/20">
+            <img src={expandedImage} alt="Expanded Threat Snapshot View" className="w-full h-full object-contain" />
+            <div className="absolute top-4 left-4 bg-slate-950/80 border border-slate-800 px-3 py-1.5 rounded text-[10px] tracking-wider text-slate-400 font-mono space-y-0.5">
+              <p className="text-red-400 font-bold">// PERIMETER BREACH ENHANCEMENT</p>
+              <p>SOURCE: TOWER_01_CAM_MATRIX</p>
+              <p>RESOLUTION: 4056x3040 HQ</p>
+            </div>
+
+            <button
+              className="absolute top-4 right-4 bg-slate-950/80 hover:bg-slate-900 border border-slate-800 text-slate-300 text-[10px] uppercase font-bold px-3 py-1.5 rounded transition-colors"
+              onClick={() => setExpandedImage(null)}
+            >
+              Close View [ESC]
+            </button>
           </div>
         </div>
       )}
