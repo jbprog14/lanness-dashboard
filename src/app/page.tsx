@@ -3,6 +3,7 @@
 
 import React, { useState, useEffect } from "react";
 import PowerMetricsPanel from "./dashboard/PowerMetricsPanel";
+import RpiHealthMetricsPanel, { RpiMetricEntry } from "./dashboard/RpiHealthMetricsPanel";
 
 interface LogEntry {
   id: string;
@@ -16,17 +17,16 @@ export default function LannessDashboard() {
   const [globalSystemStatus, setGlobalSystemStatus] = useState<string>("standby");
   const [liveTelemetry, setLiveTelemetry] = useState<any>(null);
   const [historyLogs, setHistoryLogs] = useState<LogEntry[]>([]);
+  const [rpiMetricsHistory, setRpiMetricsHistory] = useState<RpiMetricEntry[]>([]);
   const [cameraDirection, setCameraDirection] = useState<"N" | "S" | "E" | "W">("N");
   const [activeTab, setActiveTab] = useState<"current" | "history">("current");
   const [showCurrentThreat, setShowCurrentThreat] = useState(true);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [expandedImage, setExpandedImage] = useState<string | null>(null);
 
-  // New States: Tracking itemized deletion target and live tactical field notes
   const [logToDelete, setLogToDelete] = useState<string | null>(null);
   const [threatNote, setThreatNote] = useState<string>("");
 
-  // Unsplash tactical mock imagery streams
   const threatSnapshots = [
     "https://images.unsplash.com/photo-1527977966376-1c8408f9f108?auto=format&fit=crop&w=600&q=80",
     "https://images.unsplash.com/photo-1508614589041-895b88991e3e?auto=format&fit=crop&w=600&q=80",
@@ -58,7 +58,7 @@ export default function LannessDashboard() {
     return () => eventSource.close();
   }, []);
 
-  // STREAM B: Trigger History Logs Listener
+  // STREAM B: Trigger History Logs Listener (With Incremental Catching)
   useEffect(() => {
     const historyUrl = "https://lanness-sytem-default-rtdb.firebaseio.com/lanness-tower-01/history.json";
     const eventSource = new EventSource(historyUrl);
@@ -80,6 +80,14 @@ export default function LannessDashboard() {
           } else {
             setHistoryLogs([]);
           }
+        } else if (streamData.path && streamData.data) {
+          // Catches granular live log appends dynamically
+          const newId = streamData.path.replace("/", "");
+          const newLog = { id: newId, ...streamData.data };
+          setHistoryLogs((prev) => {
+            if (prev.some((item) => item.id === newId)) return prev;
+            return [newLog, ...prev].sort((a, b) => b.timestamp - a.timestamp);
+          });
         }
       } catch (error) {
         console.error("History logging stream error:", error);
@@ -89,12 +97,55 @@ export default function LannessDashboard() {
     return () => eventSource.close();
   }, []);
 
-  // Set targeted item for custom Level-2 validation check
+  // STREAM C: RPi 5 Health Monitor (With Delta Intercept Patch for True Real-Time Graph Flow)
+  useEffect(() => {
+    const rpiUrl = "https://lanness-sytem-default-rtdb.firebaseio.com/expanded_metrics.json";
+    const eventSource = new EventSource(rpiUrl);
+
+    eventSource.addEventListener("put", (event: MessageEvent) => {
+      try {
+        const streamData = JSON.parse(event.data);
+        if (!streamData) return;
+
+        const rawData = streamData.data;
+
+        if (streamData.path === "/") {
+          // Initial baseline boot up dataset load
+          if (rawData) {
+            const parsedMetrics = Object.keys(rawData).map((key) => ({
+              id: key,
+              ...rawData[key],
+            }));
+            setRpiMetricsHistory(
+              parsedMetrics.sort((a, b) => b.system_identity.timestamp - a.system_identity.timestamp),
+            );
+          } else {
+            setRpiMetricsHistory([]);
+          }
+        } else if (streamData.path && streamData.data) {
+          // INTERCEPT ATTACHMENT: Processes single standalone push nodes as they stream from the Pi
+          const newId = streamData.path.replace("/", "");
+          const newEntry = { id: newId, ...streamData.data };
+
+          setRpiMetricsHistory((prev) => {
+            if (prev.some((item) => item.id === newId)) return prev;
+            const combined = [newEntry, ...prev];
+            // Sort chronologically and restrict internal scrolling memory stack size to preserve device resources
+            return combined.sort((a, b) => b.system_identity.timestamp - a.system_identity.timestamp).slice(0, 40);
+          });
+        }
+      } catch (error) {
+        console.error("Expanded metrics telemetry streaming error:", error);
+      }
+    });
+
+    return () => eventSource.close();
+  }, []);
+
   const initiateDeleteLog = (id: string) => {
     setLogToDelete(id);
   };
 
-  // Confirmed execution pipeline for index log erasure
   const confirmDeleteLog = async () => {
     if (!logToDelete) return;
     try {
@@ -236,7 +287,7 @@ export default function LannessDashboard() {
                           ))}
                         </div>
 
-                        {/* NEW FEATURE: Operational Notes Input Field Container */}
+                        {/* Operational Notes Input Field Container */}
                         <div className="pt-1">
                           <label className="text-[10px] text-slate-500 uppercase block tracking-wider font-bold mb-1">
                             Incident Tactical Notes
@@ -301,6 +352,9 @@ export default function LannessDashboard() {
 
         {/* Column C: Power Subsystem Section */}
         <PowerMetricsPanel liveMetrics={liveTelemetry} />
+
+        {/* Integrated directly under the Power Subsystem Monitor */}
+        <RpiHealthMetricsPanel metricsHistory={rpiMetricsHistory} />
       </div>
 
       {/* Dismiss Alert Approval Modal UI */}
@@ -329,7 +383,7 @@ export default function LannessDashboard() {
         </div>
       )}
 
-      {/* NEW FEATURE: Itemized Log History Deletion Level-2 Approval Modal */}
+      {/* Itemized Log History Deletion Level-2 Approval Modal */}
       {logToDelete && (
         <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50 p-4">
           <div className="bg-slate-900 border border-slate-800 rounded-lg p-6 max-w-sm w-full shadow-2xl">
