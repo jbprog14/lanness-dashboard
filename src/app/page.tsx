@@ -4,6 +4,8 @@
 import React, { useState, useEffect } from "react";
 import PowerMetricsPanel from "./dashboard/PowerMetricsPanel";
 import RpiHealthMetricsPanel, { RpiMetricEntry } from "./dashboard/RpiHealthMetricsPanel";
+// Import your fresh real-time WebRTC media component
+import WebRtcCameraFeed from "./dashboard/WebRtcCameraFeed";
 
 interface LogEntry {
   id: string;
@@ -11,6 +13,9 @@ interface LogEntry {
   status: string;
   timestamp: number;
   zone: string;
+  thumbnail?: string; // NEW: base64 image from the Pi (optional)
+  datetime?: string; // NEW: readable timestamp (optional)
+  image_local?: string; // NEW: full-res filename on the Pi (optional)
 }
 
 export default function LannessDashboard() {
@@ -27,10 +32,11 @@ export default function LannessDashboard() {
   const [logToDelete, setLogToDelete] = useState<string | null>(null);
   const [threatNote, setThreatNote] = useState<string>("");
 
-  const threatSnapshots = [
-    "https://images.unsplash.com/photo-1527977966376-1c8408f9f108?auto=format&fit=crop&w=600&q=80",
-    "https://images.unsplash.com/photo-1508614589041-895b88991e3e?auto=format&fit=crop&w=600&q=80",
-  ];
+  // NEW: pull thumbnails from the most recent real breaches (max 2)
+  const threatSnapshots = historyLogs
+    .filter((log) => log.thumbnail)
+    .slice(0, 2)
+    .map((log) => log.thumbnail as string);
 
   // STREAM A: Real-Time Telemetry Listener
   useEffect(() => {
@@ -58,7 +64,7 @@ export default function LannessDashboard() {
     return () => eventSource.close();
   }, []);
 
-  // STREAM B: Trigger History Logs Listener (With Incremental Catching)
+  // STREAM B: Trigger History Logs Listener
   useEffect(() => {
     const historyUrl = "https://lanness-sytem-default-rtdb.firebaseio.com/lanness-tower-01/history.json";
     const eventSource = new EventSource(historyUrl);
@@ -71,6 +77,7 @@ export default function LannessDashboard() {
         const rawData = streamData.data;
 
         if (streamData.path === "/") {
+          // Full tree refresh
           if (rawData) {
             const parsedLogs = Object.keys(rawData).map((key) => ({
               id: key,
@@ -80,14 +87,20 @@ export default function LannessDashboard() {
           } else {
             setHistoryLogs([]);
           }
-        } else if (streamData.path && streamData.data) {
-          // Catches granular live log appends dynamically
-          const newId = streamData.path.replace("/", "");
-          const newLog = { id: newId, ...streamData.data };
-          setHistoryLogs((prev) => {
-            if (prev.some((item) => item.id === newId)) return prev;
-            return [newLog, ...prev].sort((a, b) => b.timestamp - a.timestamp);
-          });
+        } else if (streamData.path) {
+          const itemId = streamData.path.replace("/", "");
+
+          if (rawData === null) {
+            // NEW: a record was DELETED -> remove it from local state live
+            setHistoryLogs((prev) => prev.filter((item) => item.id !== itemId));
+          } else {
+            // A record was added/updated
+            const newLog = { id: itemId, ...rawData };
+            setHistoryLogs((prev) => {
+              const without = prev.filter((item) => item.id !== itemId);
+              return [newLog, ...without].sort((a, b) => b.timestamp - a.timestamp);
+            });
+          }
         }
       } catch (error) {
         console.error("History logging stream error:", error);
@@ -97,7 +110,7 @@ export default function LannessDashboard() {
     return () => eventSource.close();
   }, []);
 
-  // STREAM C: RPi 5 Health Monitor (With Delta Intercept Patch for True Real-Time Graph Flow)
+  // STREAM C: RPi 5 Health Monitor
   useEffect(() => {
     const rpiUrl = "https://lanness-sytem-default-rtdb.firebaseio.com/expanded_metrics.json";
     const eventSource = new EventSource(rpiUrl);
@@ -110,7 +123,6 @@ export default function LannessDashboard() {
         const rawData = streamData.data;
 
         if (streamData.path === "/") {
-          // Initial baseline boot up dataset load
           if (rawData) {
             const parsedMetrics = Object.keys(rawData).map((key) => ({
               id: key,
@@ -123,14 +135,12 @@ export default function LannessDashboard() {
             setRpiMetricsHistory([]);
           }
         } else if (streamData.path && streamData.data) {
-          // INTERCEPT ATTACHMENT: Processes single standalone push nodes as they stream from the Pi
           const newId = streamData.path.replace("/", "");
           const newEntry = { id: newId, ...streamData.data };
 
           setRpiMetricsHistory((prev) => {
             if (prev.some((item) => item.id === newId)) return prev;
             const combined = [newEntry, ...prev];
-            // Sort chronologically and restrict internal scrolling memory stack size to preserve device resources
             return combined.sort((a, b) => b.system_identity.timestamp - a.system_identity.timestamp).slice(0, 40);
           });
         }
@@ -151,10 +161,7 @@ export default function LannessDashboard() {
     try {
       const itemUrl = `https://lanness-sytem-default-rtdb.firebaseio.com/lanness-tower-01/history/${logToDelete}.json`;
       const response = await fetch(itemUrl, { method: "DELETE" });
-
-      if (!response.ok) {
-        console.error("Failed to delete specific item node from backend database.");
-      }
+      if (!response.ok) console.error("Failed to delete specific item node from backend database.");
     } catch (error) {
       console.error("Network fault processing item node elimination:", error);
     } finally {
@@ -192,14 +199,12 @@ export default function LannessDashboard() {
               <h2 className="text-xs font-bold uppercase tracking-wider text-slate-400">Live Tower Camera Array</h2>
               <span className="text-[10px] bg-slate-950 px-2 py-0.5 rounded text-emerald-400">Arducam IMX477</span>
             </div>
-            <div className="relative aspect-video bg-slate-950 rounded border border-slate-850 flex items-center justify-center overflow-hidden">
-              <div className="absolute top-3 left-3 bg-black/75 px-2 py-1 rounded text-[10px] tracking-widest text-white">
-                CAM_FEED_{cameraDirection} // STREAM_LIVE
-              </div>
-              <p className="text-xs text-slate-600 uppercase tracking-widest">
-                [ Simulating Video Channel {cameraDirection} ]
-              </p>
+
+            {/* CLEAN OVERHAUL: Swapped simulation text directly for your real WebRTC player engine */}
+            <div className="relative aspect-video bg-slate-950 rounded border border-slate-850 overflow-hidden">
+              <WebRtcCameraFeed currentDirection={cameraDirection} />
             </div>
+
             <div className="grid grid-cols-4 gap-2">
               {(["N", "S", "E", "W"] as const).map((dir) => (
                 <button
@@ -263,7 +268,6 @@ export default function LannessDashboard() {
                         </p>
                       </div>
 
-                      {/* Incident Snapshot Thumbnail Panel */}
                       <div className="space-y-2 pt-1 border-t border-red-900/30">
                         <span className="text-[10px] text-slate-500 uppercase block tracking-wider font-bold">
                           Arducam Threat Capture Event
@@ -287,7 +291,6 @@ export default function LannessDashboard() {
                           ))}
                         </div>
 
-                        {/* Operational Notes Input Field Container */}
                         <div className="pt-1">
                           <label className="text-[10px] text-slate-500 uppercase block tracking-wider font-bold mb-1">
                             Incident Tactical Notes
@@ -305,7 +308,7 @@ export default function LannessDashboard() {
                     <div className="text-center py-16 text-xs text-slate-500 italic">No active vectors reported.</div>
                   )
                 ) : (
-                  <div className="space-y-2 max-h-[450px] overflow-y-auto pr-1">
+                  <div className="space-y-2 max-h-[650px] overflow-y-auto pr-1">
                     {historyLogs.length > 0 ? (
                       historyLogs.map((log) => (
                         <div
@@ -325,6 +328,24 @@ export default function LannessDashboard() {
                               </button>
                             </div>
                           </div>
+
+                          {/* NEW: real captured thumbnail (only if present) */}
+                          {log.thumbnail && (
+                            <div
+                              onClick={() => setExpandedImage(log.thumbnail!)}
+                              className="relative w-full h-[200px] aspect-video bg-slate-900 rounded border border-slate-800 overflow-hidden cursor-zoom-in hover:border-red-500 transition-colors my-1.5"
+                            >
+                              <img
+                                src={log.thumbnail}
+                                alt={`Breach ${log.id}`}
+                                className="w-full h-full object-cover opacity-80 hover:opacity-100 transition-opacity"
+                              />
+                              <div className="absolute bottom-0.5 right-1 bg-slate-950/80 px-1 rounded text-[7px] text-slate-400 font-mono">
+                                IR_CAPTURE
+                              </div>
+                            </div>
+                          )}
+
                           <p className="text-slate-200 font-semibold">{log.sensor}</p>
                           <p className="text-slate-400 text-[10px]">↳ Status: {log.status}</p>
                         </div>
@@ -422,7 +443,6 @@ export default function LannessDashboard() {
               <p>SOURCE: TOWER_01_CAM_MATRIX</p>
               <p>RESOLUTION: 4056x3040 HQ</p>
             </div>
-
             <button
               className="absolute top-4 right-4 bg-slate-950/80 hover:bg-slate-900 border border-slate-800 text-slate-300 text-[10px] uppercase font-bold px-3 py-1.5 rounded transition-colors"
               onClick={() => setExpandedImage(null)}
