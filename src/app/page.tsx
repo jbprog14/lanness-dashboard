@@ -12,6 +12,7 @@ interface LogEntry {
   sensor: string;
   status: string;
   timestamp: number;
+  notes?: string;
   zone: string;
   thumbnail?: string; // NEW: base64 image from the Pi (optional)
   datetime?: string; // NEW: readable timestamp (optional)
@@ -31,6 +32,10 @@ export default function LannessDashboard() {
 
   const [logToDelete, setLogToDelete] = useState<string | null>(null);
   const [threatNote, setThreatNote] = useState<string>("");
+  const [activeIncident, setActiveIncident] = useState<any>(null);
+  const threatActive = !!activeIncident;
+  const [notesText, setNotesText] = useState("");
+  const [savingAck, setSavingAck] = useState(false);
 
   // NEW: pull thumbnails from the most recent real breaches (max 2)
   const threatSnapshots = historyLogs
@@ -152,6 +157,26 @@ export default function LannessDashboard() {
     return () => eventSource.close();
   }, []);
 
+  // STREAM D: Active Incident Listener (latched alert state)
+  useEffect(() => {
+    let mounted = true;
+    const pull = async () => {
+      try {
+        const res = await fetch("https://lanness-sytem-default-rtdb.firebaseio.com/lanness-tower-01/incident.json");
+        const data = await res.json();
+        if (mounted) setActiveIncident(data && data.active ? data : null);
+      } catch (e) {
+        console.error("Incident pull failed:", e);
+      }
+    };
+    pull();
+    const id = setInterval(pull, 3000);
+    return () => {
+      mounted = false;
+      clearInterval(id);
+    };
+  }, []);
+
   const initiateDeleteLog = (id: string) => {
     setLogToDelete(id);
   };
@@ -166,6 +191,43 @@ export default function LannessDashboard() {
       console.error("Network fault processing item node elimination:", error);
     } finally {
       setLogToDelete(null);
+    }
+  };
+
+  const acknowledgeIncident = async () => {
+    if (!activeIncident) return;
+    setSavingAck(true);
+    const base = "https://lanness-sytem-default-rtdb.firebaseio.com/lanness-tower-01";
+    try {
+      // Save notes + acknowledged onto the specific breach record
+      if (activeIncident.event_id) {
+        await fetch(`${base}/history/${activeIncident.event_id}.json`, {
+          method: "PATCH",
+          body: JSON.stringify({
+            notes: notesText || "",
+            acknowledged: true,
+            acknowledged_at: Math.floor(Date.now() / 1000),
+          }),
+        });
+      }
+      // Clear the incident so ALL monitors return to secure
+      await fetch(`${base}/incident.json`, {
+        method: "PATCH",
+        body: JSON.stringify({ active: false }),
+      });
+      // update the on-screen history list so the note shows immediately
+      setHistoryLogs((prev) =>
+        prev.map((log) =>
+          log.id === activeIncident.event_id ? { ...log, notes: notesText, acknowledged: true } : log,
+        ),
+      );
+
+      setActiveIncident(null);
+      setNotesText("");
+    } catch (e) {
+      console.error("Acknowledge failed:", e);
+    } finally {
+      setSavingAck(false);
     }
   };
 
@@ -243,14 +305,27 @@ export default function LannessDashboard() {
               {/* Display Area */}
               <div className="space-y-3 w-full">
                 {activeTab === "current" ? (
-                  showCurrentThreat && liveTelemetry ? (
-                    <div className="bg-red-950/10 border border-red-900/40 p-4 rounded text-xs space-y-3">
-                      <div className="flex justify-between items-center text-red-400 font-bold">
-                        <span>⚠️ ACTIVE INCIDENT</span>
-                        <span className="text-[10px] bg-red-950 border border-red-800 px-1.5 py-0.5 rounded animate-pulse">
-                          LIVE
-                        </span>
-                      </div>
+                  liveTelemetry ? (
+                    <div
+                      className={`p-4 rounded text-xs space-y-3 border ${
+                        threatActive ? "bg-red-950/10 border-red-900/40" : "bg-emerald-950/10 border-emerald-900/30"
+                      }`}
+                    >
+                      {threatActive ? (
+                        <div className="flex justify-between items-center text-red-400 font-bold">
+                          <span>⚠️ ACTIVE INCIDENT</span>
+                          <span className="text-[10px] bg-red-950 border border-red-800 px-1.5 py-0.5 rounded animate-pulse">
+                            LIVE
+                          </span>
+                        </div>
+                      ) : (
+                        <div className="flex justify-between items-center text-emerald-400 font-bold">
+                          <span>✓ PERIMETER SECURE</span>
+                          <span className="text-[10px] bg-emerald-950 border border-emerald-800 px-1.5 py-0.5 rounded">
+                            MONITORING
+                          </span>
+                        </div>
+                      )}
 
                       <div className="space-y-1 text-slate-300 pt-1">
                         <p>
@@ -264,7 +339,7 @@ export default function LannessDashboard() {
                         </p>
                         <p>
                           <span className="text-slate-500">PIR Sensor Breach:</span>{" "}
-                          {liveTelemetry.pir_trigger === 1 ? "CORRIDOR VIOLATION" : "SECURE"}
+                          {threatActive ? "CORRIDOR VIOLATION" : "SECURE"}
                         </p>
                       </div>
 
@@ -296,11 +371,20 @@ export default function LannessDashboard() {
                             Incident Tactical Notes
                           </label>
                           <textarea
-                            value={threatNote}
-                            onChange={(e) => setThreatNote(e.target.value)}
+                            value={notesText}
+                            onChange={(e) => setNotesText(e.target.value)}
                             placeholder="Type tactical assessment log details here..."
                             className="w-full bg-slate-950/60 border border-slate-800 rounded p-2 text-[11px] text-slate-300 placeholder-slate-600 focus:outline-none focus:border-red-900/60 resize-none h-14 font-mono"
                           />
+                          {threatActive && (
+                            <button
+                              onClick={acknowledgeIncident}
+                              disabled={savingAck}
+                              className="w-full mt-2 py-2 text-xs font-bold rounded border bg-emerald-700 border-emerald-600 text-white hover:bg-emerald-600 transition-colors disabled:opacity-50 uppercase tracking-wide"
+                            >
+                              {savingAck ? "Saving..." : "Acknowledge & Clear Incident"}
+                            </button>
+                          )}
                         </div>
                       </div>
                     </div>
@@ -348,6 +432,15 @@ export default function LannessDashboard() {
 
                           <p className="text-slate-200 font-semibold">{log.sensor}</p>
                           <p className="text-slate-400 text-[10px]">↳ Status: {log.status}</p>
+
+                          {log.notes && (
+                            <div className="mt-1.5 pt-1.5 border-t border-slate-800/60">
+                              <span className="text-[9px] text-slate-600 uppercase tracking-wider font-bold block mb-0.5">
+                                Tactical Assessment
+                              </span>
+                              <p className="text-[10px] text-slate-300 italic leading-snug">“{log.notes}”</p>
+                            </div>
+                          )}
                         </div>
                       ))
                     ) : (
@@ -359,15 +452,6 @@ export default function LannessDashboard() {
                 )}
               </div>
             </div>
-
-            {activeTab === "current" && showCurrentThreat && liveTelemetry && (
-              <button
-                onClick={handleDismissClick}
-                className="w-full mt-4 bg-red-900/20 hover:bg-red-900/40 border border-red-800/40 text-red-200 text-xs py-2 rounded transition-colors uppercase font-bold tracking-wide"
-              >
-                Dismiss Threat Report
-              </button>
-            )}
           </div>
         </div>
 
@@ -377,32 +461,6 @@ export default function LannessDashboard() {
         {/* Integrated directly under the Power Subsystem Monitor */}
         <RpiHealthMetricsPanel metricsHistory={rpiMetricsHistory} />
       </div>
-
-      {/* Dismiss Alert Approval Modal UI */}
-      {isModalOpen && (
-        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-          <div className="bg-slate-900 border border-slate-800 rounded-lg p-6 max-w-sm w-full shadow-2xl">
-            <h3 className="text-xs font-bold uppercase text-amber-500 tracking-wider mb-2">
-              ⚠️ Priority Level-2 Action
-            </h3>
-            <p className="text-[11px] text-slate-400 leading-relaxed mb-6">
-              Executing administrative override. This will clear the active live alert telemetry layer from the monitor
-              workspace.
-            </p>
-            <div className="flex gap-2 justify-end text-xs">
-              <button
-                onClick={() => setIsModalOpen(false)}
-                className="bg-slate-950 text-slate-400 px-4 py-2 rounded border border-slate-800"
-              >
-                Cancel
-              </button>
-              <button onClick={confirmDismissal} className="bg-amber-600 font-bold px-4 py-2 rounded text-white">
-                Confirm Clear
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
 
       {/* Itemized Log History Deletion Level-2 Approval Modal */}
       {logToDelete && (
