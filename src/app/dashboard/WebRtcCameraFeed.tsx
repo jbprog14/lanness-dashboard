@@ -4,7 +4,7 @@
 import React, { useEffect, useRef, useState } from "react";
 
 interface WebRtcCameraFeedProps {
-  currentDirection: "N" | "S" | "E" | "W";
+  currentDirection: "Front" | "Rear";
 }
 
 export default function WebRtcCameraFeed({ currentDirection }: WebRtcCameraFeedProps) {
@@ -102,7 +102,7 @@ export default function WebRtcCameraFeed({ currentDirection }: WebRtcCameraFeedP
     <div className="w-full h-full relative flex items-center justify-center bg-slate-950">
       {/* Direction Overlay Tag */}
       <div className="absolute top-3 left-3 bg-black/75 px-2 py-1 rounded text-[10px] tracking-widest text-white z-10 font-mono">
-        CAM_FEED_{currentDirection || "N"} // STREAM_LIVE
+        CAM_FEED_{currentDirection || "string"} // STREAM_LIVE
       </div>
 
       {/* Connection State Badge Overlay */}
